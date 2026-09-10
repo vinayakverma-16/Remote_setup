@@ -9,7 +9,7 @@
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────
-TUNNEL_METHOD="${1:-bore}"          # bore | ngrok | tmate
+TUNNEL_METHOD="${1:-serveo}"          # serveo | bore | ngrok | tmate
 GIVE_SUDO="yes"                    # "yes" = temp user gets sudo
 BORE_SERVER="bore.pub"
 # ──────────────────────────────────────────────────────────────
@@ -159,6 +159,44 @@ banner "STEP 3: Opening tunnel ($TUNNEL_METHOD)"
 
 case "$TUNNEL_METHOD" in
 
+# ── SERVEO (default — no download, uses SSH) ──────────────────
+serveo)
+    log "Starting SSH reverse tunnel via serveo.net..."
+    SERVEO_LOG=$(mktemp /tmp/serveo_log.XXXXXX)
+
+    ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+        -R 0:localhost:22 serveo.net > "$SERVEO_LOG" 2>&1 &
+    TUNNEL_PID=$!
+
+    TUNNEL_PORT=""
+    for i in $(seq 1 30); do
+        if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+            break
+        fi
+        if [[ -s "$SERVEO_LOG" ]]; then
+            # serveo outputs: "Forwarding TCP connections from serveo.net:PORT"
+            TUNNEL_PORT=$(grep -oP 'serveo\.net:\K\d+' "$SERVEO_LOG" | head -1)
+            [[ -n "$TUNNEL_PORT" ]] && break
+        fi
+        sleep 1
+    done
+
+    if [[ -z "$TUNNEL_PORT" ]]; then
+        err "Could not establish serveo tunnel. Log:"
+        cat "$SERVEO_LOG"
+        rm -f "$SERVEO_LOG"
+        # Try bore as fallback
+        warn "Trying bore as fallback..."
+        TUNNEL_METHOD="bore"
+        rm -f "$SERVEO_LOG"
+        exec bash "$0" bore
+    fi
+
+    TUNNEL_HOST="serveo.net"
+    rm -f "$SERVEO_LOG"
+    log "Tunnel established via serveo.net!"
+    ;;
+
 # ── BORE ──────────────────────────────────────────────────────
 bore)
     if ! command -v bore &>/dev/null; then
@@ -301,7 +339,7 @@ tmate)
 
 *)
     err "Unknown tunnel method: $TUNNEL_METHOD"
-    err "Use: bore, ngrok, or tmate"
+    err "Use: serveo, bore, ngrok, or tmate"
     exit 1
     ;;
 esac
