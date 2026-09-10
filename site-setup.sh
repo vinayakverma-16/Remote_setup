@@ -170,11 +170,26 @@ bore)
             armv7l)  BORE_ARCH="armv7-unknown-linux-musleabihf" ;;
             *)       err "Unsupported architecture: $ARCH"; exit 1 ;;
         esac
-        BORE_URL="https://github.com/ekzhang/bore/releases/latest/download/bore-${BORE_ARCH}.tar.gz"
+        # Get latest version tag from GitHub API
+        BORE_VERSION=$(curl -sI "https://github.com/ekzhang/bore/releases/latest" | grep -i "^location:" | grep -oP 'tag/\K[^\s\r]+')
+        if [[ -z "$BORE_VERSION" ]]; then
+            BORE_VERSION="v0.6.0"  # fallback
+        fi
+        BORE_URL="https://github.com/ekzhang/bore/releases/download/${BORE_VERSION}/bore-${BORE_VERSION}-${BORE_ARCH}.tar.gz"
         BORE_BIN="/tmp/bore"
-        curl -sL "$BORE_URL" | tar xz -C /tmp
-        chmod +x "$BORE_BIN"
-        log "bore downloaded to /tmp/bore"
+        BORE_TMP=$(mktemp /tmp/bore_dl.XXXXXX)
+        curl -sL "$BORE_URL" -o "$BORE_TMP"
+        # Validate it's actually a gzip file
+        if file "$BORE_TMP" | grep -q gzip; then
+            tar xzf "$BORE_TMP" -C /tmp
+            chmod +x "$BORE_BIN"
+            log "bore ${BORE_VERSION} downloaded to /tmp/bore"
+        else
+            err "Download failed (not a valid archive). URL: $BORE_URL"
+            rm -f "$BORE_TMP"
+            exit 1
+        fi
+        rm -f "$BORE_TMP"
     else
         BORE_BIN=$(command -v bore)
     fi
@@ -319,3 +334,4 @@ while kill -0 "$TUNNEL_PID" 2>/dev/null; do
 done
 
 warn "Tunnel process ended unexpectedly."
+
