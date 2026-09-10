@@ -307,31 +307,85 @@ tmate)
 esac
 
 # ══════════════════════════════════════════════════════════════
-#  STEP 4: DISPLAY CONNECTION INFO
+#  STEP 4: DISPLAY CONNECTION INFO & AUTO-RECONNECT
 # ══════════════════════════════════════════════════════════════
-echo ""
-echo ""
-echo -e "${CYAN}╔════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║${NC}                                                        ${CYAN}║${NC}"
-echo -e "${CYAN}║${NC}   ${BOLD}🔗 REMOTE SUPPORT SESSION READY${NC}                     ${CYAN}║${NC}"
-echo -e "${CYAN}║${NC}                                                        ${CYAN}║${NC}"
-echo -e "${CYAN}╠════════════════════════════════════════════════════════╣${NC}"
-echo -e "${CYAN}║${NC}                                                        ${CYAN}║${NC}"
-echo -e "${CYAN}║${NC}   From your ${BOLD}office PC${NC}, run:                           ${CYAN}║${NC}"
-echo -e "${CYAN}║${NC}                                                        ${CYAN}║${NC}"
-echo -e "${CYAN}║${NC}   ${GREEN}ssh ${TEMP_USER}@${TUNNEL_HOST} -p ${TUNNEL_PORT}${NC}"
-echo -e "${CYAN}║${NC}                                                        ${CYAN}║${NC}"
-echo -e "${CYAN}║${NC}   ${BOLD}Password:${NC}  ${YELLOW}${TEMP_PASS}${NC}"
-echo -e "${CYAN}║${NC}                                                        ${CYAN}║${NC}"
-echo -e "${CYAN}╚════════════════════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "${YELLOW}  ⏳ Session is active. Press Ctrl+C to end & clean up.${NC}"
-echo ""
+show_connection_info() {
+    echo ""
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║${NC}                                                        ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}   ${BOLD}🔗 REMOTE SUPPORT SESSION READY${NC}                     ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}                                                        ${CYAN}║${NC}"
+    echo -e "${CYAN}╠════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${CYAN}║${NC}                                                        ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}   From your ${BOLD}office PC${NC}, run:                           ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}                                                        ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}   ${GREEN}ssh ${TEMP_USER}@${TUNNEL_HOST} -p ${TUNNEL_PORT}${NC}"
+    echo -e "${CYAN}║${NC}                                                        ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}   ${BOLD}Password:${NC}  ${YELLOW}${TEMP_PASS}${NC}"
+    echo -e "${CYAN}║${NC}                                                        ${CYAN}║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}  ⏳ Session is active. Press Ctrl+C to end & clean up.${NC}"
+    echo ""
+}
 
-# Keep alive — wait for Ctrl+C
-while kill -0 "$TUNNEL_PID" 2>/dev/null; do
-    sleep 5
+# Function to start/restart bore tunnel
+start_bore_tunnel() {
+    BORE_LOG=$(mktemp /tmp/bore_log.XXXXXX)
+    "$BORE_BIN" local 22 --to "$BORE_SERVER" > "$BORE_LOG" 2>&1 &
+    TUNNEL_PID=$!
+
+    TUNNEL_PORT=""
+    for i in $(seq 1 30); do
+        if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+            break  # process died
+        fi
+        if [[ -s "$BORE_LOG" ]]; then
+            TUNNEL_PORT=$(grep -oP 'bore\.pub:(\d+)' "$BORE_LOG" | head -1 | cut -d: -f2)
+            [[ -n "$TUNNEL_PORT" ]] && break
+            TUNNEL_PORT=$(grep -oP 'remote port \K\d+' "$BORE_LOG" | head -1)
+            [[ -n "$TUNNEL_PORT" ]] && break
+        fi
+        sleep 1
+    done
+    rm -f "$BORE_LOG"
+
+    if [[ -n "$TUNNEL_PORT" ]]; then
+        TUNNEL_HOST="$BORE_SERVER"
+        return 0
+    else
+        return 1
+    fi
+}
+
+show_connection_info
+
+# Keep alive with auto-reconnect
+MAX_RETRIES=10
+RETRY_COUNT=0
+
+while true; do
+    # Wait for tunnel to die
+    while kill -0 "$TUNNEL_PID" 2>/dev/null; do
+        sleep 5
+    done
+
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    if [[ $RETRY_COUNT -gt $MAX_RETRIES ]]; then
+        err "Tunnel dropped $MAX_RETRIES times. Giving up."
+        break
+    fi
+
+    warn "Tunnel dropped! Reconnecting... (attempt $RETRY_COUNT/$MAX_RETRIES)"
+    sleep 2
+
+    if start_bore_tunnel; then
+        log "Reconnected!"
+        show_connection_info
+        RETRY_COUNT=0  # reset on successful reconnect
+    else
+        err "Reconnect failed."
+    fi
 done
-
-warn "Tunnel process ended unexpectedly."
 
