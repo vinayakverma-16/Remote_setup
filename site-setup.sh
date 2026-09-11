@@ -9,7 +9,7 @@
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────
-TUNNEL_METHOD="${1:-serveo}"          # serveo | bore | ngrok | tmate
+TUNNEL_METHOD="${1:-ngrok}"          # ngrok | serveo | bore | tmate
 GIVE_SUDO="yes"                    # "yes" = temp user gets sudo
 BORE_SERVER="bore.pub"
 # ──────────────────────────────────────────────────────────────
@@ -269,19 +269,68 @@ bore)
 
 # ── NGROK ─────────────────────────────────────────────────────
 ngrok)
-    if ! command -v ngrok &>/dev/null; then
-        err "ngrok not found. Install it first: https://ngrok.com/download"
-        err "After install, run: ngrok config add-authtoken YOUR_TOKEN"
-        exit 1
+    NGROK_BIN=""
+    if command -v ngrok &>/dev/null; then
+        NGROK_BIN=$(command -v ngrok)
+        log "ngrok found at $NGROK_BIN"
+    else
+        log "Downloading ngrok..."
+        ARCH=$(uname -m)
+        case "$ARCH" in
+            x86_64)  NGROK_ARCH="amd64" ;;
+            aarch64) NGROK_ARCH="arm64" ;;
+            armv7l)  NGROK_ARCH="arm" ;;
+            *)       err "Unsupported architecture: $ARCH"; exit 1 ;;
+        esac
+        NGROK_URL="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-${NGROK_ARCH}.tgz"
+        NGROK_TMP=$(mktemp /tmp/ngrok_dl.XXXXXX)
+        curl -sL "$NGROK_URL" -o "$NGROK_TMP"
+        if file "$NGROK_TMP" | grep -q gzip; then
+            tar xzf "$NGROK_TMP" -C /tmp
+            chmod +x /tmp/ngrok
+            NGROK_BIN="/tmp/ngrok"
+            log "ngrok downloaded to /tmp/ngrok"
+        else
+            err "Failed to download ngrok."
+            rm -f "$NGROK_TMP"
+            exit 1
+        fi
+        rm -f "$NGROK_TMP"
     fi
 
-    ngrok tcp 22 --log=stdout --log-format=json > /tmp/ngrok_log.json 2>&1 &
+    # Check if auth token is configured
+    if ! "$NGROK_BIN" config check &>/dev/null && [[ -z "${NGROK_AUTHTOKEN:-}" ]]; then
+        echo ""
+        echo -e "${YELLOW}╔════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${YELLOW}║  ngrok needs a free auth token (one-time setup)       ║${NC}"
+        echo -e "${YELLOW}║                                                        ║${NC}"
+        echo -e "${YELLOW}║  1. Go to: https://dashboard.ngrok.com/signup          ║${NC}"
+        echo -e "${YELLOW}║  2. Copy your auth token from the dashboard            ║${NC}"
+        echo -e "${YELLOW}║  3. Paste it below                                     ║${NC}"
+        echo -e "${YELLOW}╚════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        read -rp "  Paste your ngrok auth token: " NGROK_TOKEN
+        if [[ -n "$NGROK_TOKEN" ]]; then
+            "$NGROK_BIN" config add-authtoken "$NGROK_TOKEN"
+            log "Auth token saved."
+        else
+            err "No token provided. Get one at https://dashboard.ngrok.com/signup"
+            exit 1
+        fi
+    fi
+
+    "$NGROK_BIN" tcp 22 --log=stdout --log-format=json > /tmp/ngrok_log.json 2>&1 &
     TUNNEL_PID=$!
 
     log "Starting ngrok tunnel..."
     TUNNEL_HOST=""
     TUNNEL_PORT=""
-    for i in $(seq 1 20); do
+    for i in $(seq 1 30); do
+        if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+            err "ngrok process died. Check auth token or network."
+            cat /tmp/ngrok_log.json 2>/dev/null | tail -5
+            exit 1
+        fi
         if [[ -s /tmp/ngrok_log.json ]]; then
             URL=$(grep -oP '"url":"tcp://\K[^"]+' /tmp/ngrok_log.json | head -1)
             if [[ -n "$URL" ]]; then
@@ -294,11 +343,12 @@ ngrok)
     done
 
     if [[ -z "$TUNNEL_PORT" ]]; then
-        err "Could not start ngrok. Is your auth token set?"
+        err "Could not start ngrok tunnel."
+        cat /tmp/ngrok_log.json 2>/dev/null | tail -10
         exit 1
     fi
     rm -f /tmp/ngrok_log.json
-    log "Tunnel established!"
+    log "Tunnel established via ngrok!"
     ;;
 
 # ── TMATE ─────────────────────────────────────────────────────
