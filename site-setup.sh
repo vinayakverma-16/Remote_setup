@@ -9,7 +9,7 @@
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────
-TUNNEL_METHOD="${1:-ngrok}"          # ngrok | serveo | bore | tmate
+TUNNEL_METHOD="${1:-pinggy}"          # pinggy | ngrok | serveo | bore | tmate
 GIVE_SUDO="yes"                    # "yes" = temp user gets sudo
 BORE_SERVER="bore.pub"
 # ──────────────────────────────────────────────────────────────
@@ -159,7 +159,47 @@ banner "STEP 3: Opening tunnel ($TUNNEL_METHOD)"
 
 case "$TUNNEL_METHOD" in
 
-# ── SERVEO (default — no download, uses SSH) ──────────────────
+# ── PINGGY (default — no download, no signup, uses port 443) ──
+pinggy)
+    log "Starting SSH reverse tunnel via Pinggy (port 443)..."
+    PINGGY_LOG=$(mktemp /tmp/pinggy_log.XXXXXX)
+
+    ssh -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+        -R0:localhost:22 tcp@a.pinggy.io > "$PINGGY_LOG" 2>&1 &
+    TUNNEL_PID=$!
+
+    TUNNEL_HOST=""
+    TUNNEL_PORT=""
+    for i in $(seq 1 30); do
+        if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+            break
+        fi
+        if [[ -s "$PINGGY_LOG" ]]; then
+            # Pinggy outputs: tcp://xxxxx.tcp.pinggy.online:PORT
+            FULL_URL=$(grep -oP 'tcp://[^\s]+' "$PINGGY_LOG" | head -1)
+            if [[ -n "$FULL_URL" ]]; then
+                # Extract host and port from tcp://host:port
+                HOSTPORT=$(echo "$FULL_URL" | sed 's|tcp://||')
+                TUNNEL_HOST=$(echo "$HOSTPORT" | rev | cut -d: -f2- | rev)
+                TUNNEL_PORT=$(echo "$HOSTPORT" | rev | cut -d: -f1 | rev)
+                break
+            fi
+        fi
+        sleep 1
+    done
+
+    if [[ -z "$TUNNEL_PORT" ]]; then
+        err "Could not establish Pinggy tunnel. Log:"
+        cat "$PINGGY_LOG"
+        rm -f "$PINGGY_LOG"
+        exit 1
+    fi
+
+    rm -f "$PINGGY_LOG"
+    log "Tunnel established via Pinggy!"
+    ;;
+
+# ── SERVEO (no download, uses SSH port 22) ────────────────────
 serveo)
     log "Starting SSH reverse tunnel via serveo.net..."
     SERVEO_LOG=$(mktemp /tmp/serveo_log.XXXXXX)
